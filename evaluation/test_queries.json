@@ -1,0 +1,10 @@
+[
+  {
+    "query": "What are the common biomarkers for Alzheimer's disease found in cerebrospinal fluid?",
+    "expected_pmid": "12345678"
+  },
+  {
+    "query": "How does amyloid beta accumulation affect synaptic plasticity?",
+    "expected_pmid": "87654321"
+  }
+]
