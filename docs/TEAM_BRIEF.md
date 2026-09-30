@@ -28,8 +28,12 @@ tracking, statistical testing (bootstrap CIs, paired tests, calibration/ECE). LL
 ## Hard rules
 - Never push, never change git remotes, never rewrite history.
 - Never fabricate data, PMIDs or metrics.
-- MEMORY: the machine has ~2 GB free RAM; a model-loading run crashed the whole WSL VM twice.
-  Heavy runs (torch, embedding models, indexing) are BLOCKED until the human confirms more memory.
-  Until then: research, design, code and unit tests only. When unblocked: batch small, fp16 on GPU,
-  one model in memory at a time.
-- Dispatch of `dev` cards requires the human's "ok" in Orchestration; the `res` card may start now.
+- MEMORY (unblocked 2026-09-30 under these rules; the VM died twice when Windows ran out of RAM):
+  * Every memory-hungry command (torch import, model loading, indexing, training, evaluation) MUST run
+    through `~/.local/bin/heavy <command>` — a capped scope (2.6 GB) that is OOM-killed alone instead
+    of the VM. Never start such work with nohup/&/tmux outside `heavy`.
+  * CPU-only PyTorch (`pip install torch --index-url https://download.pytorch.org/whl/cpu`); no CUDA.
+  * One model in memory at a time; encode in batches of <= 16; stream embeddings to disk.
+  * Datasets stay small (SciFact, NFCorpus; PubMed demo corpus <= 5k abstracts).
+  * If a run is killed by the cap, reduce batch/corpus — do not raise the cap.
+- The human has approved execution of all cards (2026-09-30). Run implementation cards sequentially, never two heavy cards at once.
