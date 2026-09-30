@@ -85,3 +85,28 @@ NCBI_API_KEY optional). Machine limits: 7 GB RAM, RTX 3060 6 GB — keep corpora
 - Never fabricate data, PMIDs or metrics. If a run could not be done, say so in the report.
 - Stop after the phase you were asked to do and write `docs/reports/phase-N.md`: what was built,
   commands to reproduce, real results, open problems.
+
+## Research proposals (2026-09-30) — ADOPTED by the lead on 2026-09-30
+
+Adopted: the claim-evidence ledger, versioned retraction policy with `metadata_fetched_at`, the evidence-safety evaluation set and non-clinical scope, and evidence-quality-aware LTR with counterfactual reporting (relevance-only ranking retained for audit). Phases 2 and 3 must implement them; safety metrics are reported next to nDCG/MRR, never folded into one score.
+
+### Original proposals
+
+These proposals are research input only; they do not alter the committed phase scope until the owner
+accepts them.
+
+1. Add a versioned **claim-evidence ledger** as an internal/API artefact.  For every generated claim
+   retain the cited PMID and passage, retrieval/rerank scores, publication types, retraction status
+   and fetch time, evidence-policy weight, stance probabilities, and final answer/qualified/abstain
+   decision.  This makes evidence decisions auditable rather than merely producing citations.
+2. Make retraction behaviour a policy with a safe default: keep an excluded result in the audit log
+   with `excluded_reason=retracted`, prohibit it from supporting a claim, and retain the linked
+   notice.  Refresh PubMed metadata before answer/export; an explicit audit mode may display it only
+   with a conspicuous label.
+3. Add a small, manually reviewed safety challenge after Phase 1: real PMIDs pre-labelled for
+   retracted/corrected status, publication-type cases, and support/refute/insufficient evidence.
+   Report retraction-safety and support/refute balance separately from MRR/nDCG; describe it as a
+   project test set, not a clinical gold standard.
+4. Treat study-design weight and NLI stance as uncertain features, not ground truth.  Preserve a
+   relevance-only ranking for counterfactual audit, tune/calibrate without test leakage, and emit
+   `unknown` where metadata or stance confidence is inadequate.
