@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     ncbi_tool: str = "evidence-rag"
     medcpt_article_model: str = "ncbi/MedCPT-Article-Encoder"
     medcpt_query_model: str = "ncbi/MedCPT-Query-Encoder"
-    embedding_batch_size: int = Field(default=32, ge=1, le=64)
+    embedding_batch_size: int = Field(default=16, ge=1, le=16)
     retrieval_k: int = Field(default=100, ge=10, le=1000)
     rrf_k: int = Field(default=60, ge=1)
     bootstrap_samples: int = Field(default=10_000, ge=100)

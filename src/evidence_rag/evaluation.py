@@ -1,4 +1,5 @@
 import json
+import os
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -100,6 +101,8 @@ def _log_mlflow(result: Mapping[str, Any], artifact: Path, settings: Settings) -
     tracking_uri = settings.mlflow_tracking_uri
     if "://" not in tracking_uri:
         tracking_uri = Path(tracking_uri).resolve().as_uri()
+    if tracking_uri.startswith("file:"):
+        os.environ.setdefault("MLFLOW_ALLOW_FILE_STORE", "true")
     mlflow.set_tracking_uri(tracking_uri)
     mlflow.set_experiment(settings.mlflow_experiment)
     for method, values in result["methods"].items():
@@ -113,5 +116,7 @@ def _log_mlflow(result: Mapping[str, Any], artifact: Path, settings: Settings) -
                     "retrieval_k": result["retrieval_k"],
                 }
             )
-            mlflow.log_metrics(values["metrics"])
+            mlflow.log_metrics(
+                {name.replace("@", "_at_"): value for name, value in values["metrics"].items()}
+            )
             mlflow.log_artifact(artifact)

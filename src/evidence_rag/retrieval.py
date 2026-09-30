@@ -67,7 +67,7 @@ class DenseIndex:
         documents: Sequence[Document],
         path: Path,
         model_name: str,
-        batch_size: int = 32,
+        batch_size: int = 16,
     ) -> "DenseIndex":
         import torch
         from transformers import AutoModel, AutoTokenizer
@@ -134,7 +134,7 @@ class MedCPTQueryEncoder:
         if self.device == "cuda":
             self.model.half()
 
-    def encode(self, texts: Sequence[str], batch_size: int = 32) -> Iterable[np.ndarray]:
+    def encode(self, texts: Sequence[str], batch_size: int = 16) -> Iterable[np.ndarray]:
         with self.torch.inference_mode():
             for start in range(0, len(texts), batch_size):
                 inputs = self.tokenizer(
