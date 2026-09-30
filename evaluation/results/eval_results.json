@@ -1,7 +1,0 @@
-{
-  "metrics": {
-    "mrr": 0.75,
-    "hit_rate@5": 0.9
-  },
-  "detailed_results": []
-}

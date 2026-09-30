@@ -38,7 +38,11 @@ chroma_db/
 
 # Data files
 data/raw/
-data/raw/**
+data/cache/
+data/indexes/
+data/results/
+data/*.sqlite3
+data/*.sqlite3-*
 *.csv
 !data/.gitkeep
 
@@ -76,3 +80,8 @@ dmypy.json
 
 # Windows metadata
 *:Zone.Identifier
+
+# local agent logs and experiment store
+docs/reports/*.agent.log
+mlruns/
+.venv/
