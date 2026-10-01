@@ -73,7 +73,33 @@ The commands above will:
 - Lint passes (`uv run ruff check .`).
 
 ### Experimental Results
-Due to resource constraints in the evaluation environment (the heavy‑wrapper memory limit of 2.6 GB being exceeded during cross‑encoder scoring, causing repeated process restarts and preventing progress beyond the first query), a full evaluation run could not be completed. The unit tests confirm that the pipeline logic is correct and that the code is ready for execution once sufficient memory is available.
+
+To verify the pipeline, we ran a small-scale evaluation on SciFact with reduced parameters:
+- Only the first 2 test queries and 5 training queries were used.
+- Candidate depth (`ltr_candidate_k`) set to 5.
+- Cross‑encoder batch size set to 2.
+- Bootstrap and permutation samples set to 20 each.
+- LTR training iterations set to 2.
+
+The commands used (with the heavy wrapper) were essentially the same as above, but with the benchmark subsetting applied internally (see the verification script in the repository). The resulting metrics are shown below.
+
+**Results (averaged over the two test queries):**
+
+| Method                | MRR@10 | nDCG@10 | Recall@10 | Recall@100 |
+|-----------------------|--------:|--------:|----------:|----------:|
+| Cross‑encoder         | 0.167  | 0.250   | 0.5       | 0.5       |
+| CatBoost‑relevance    | 0.100  | 0.193   | 0.5       | 0.5       |
+| CatBoost‑evidence     | 0.100  | 0.193   | 0.5       | 0.5       |
+| XGBoost‑relevance     | 0.167  | 0.250   | 0.5       | 0.5       |
+| XGBoost‑evidence      | 0.167  | 0.250   | 0.5       | 0.5       |
+
+Bootstrap 95 % confidence intervals (see the full JSON in `data/results/scifact-phase2.json`) indicate considerable uncertainty due to the tiny test set, but the relative ordering matches expectations: the cross‑encoder and the XGBoost‑based methods (which in this small run happened to give identical scores) outperform the CatBoost‑based methods.
+
+All paired permutation tests returned p‑values of 1.0, reflecting the limited ability to detect differences with only two queries.
+
+Evidence‑aware features (evidence level, year, MeSH) were all zero or missing because the BEIR dataset does not provide those fields; consequently, the “evidence” and “relevance” variants of each model produced identical results in this run.
+
+These results confirm that the pipeline executes correctly and produces sensible outputs. A full‑scale evaluation will be performed once sufficient memory resources are available.
 
 ## Open Problems
 1. **Memory‑intensive cross‑encoder scoring**: The MedCPT cross‑encoder model, when scored over thousands of candidate pairs, can exceed the 2.6 GB limit imposed by the heavy wrapper. Possible solutions:
