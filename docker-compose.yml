@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  evidence-rag:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - NCBI_API_KEY=${NCBI_API_KEY}
+      - NCBI_EMAIL=${NCBI_EMAIL}
+    volumes:
+      - ./data:/app/data
+      - ./mlruns:/app/mlruns
+    restart: unless-stopped

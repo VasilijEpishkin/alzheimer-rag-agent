@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     ncbi_api_key: str | None = Field(default=None, repr=False)
     ncbi_email: str = ""
     ncbi_tool: str = "evidence-rag"
+    openrouter_api_key: str | None = Field(default=None, repr=False)
     medcpt_article_model: str = "ncbi/MedCPT-Article-Encoder"
     medcpt_query_model: str = "ncbi/MedCPT-Query-Encoder"
     medcpt_cross_model: str = "ncbi/MedCPT-Cross-Encoder"
