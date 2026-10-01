@@ -5,8 +5,12 @@ import ir_datasets
 from evidence_rag.models import Benchmark, Document
 
 _DATASETS = {
-    "scifact": "beir/scifact/test",
-    "nfcorpus": "beir/nfcorpus/test",
+    "scifact": {"train": "beir/scifact/train", "test": "beir/scifact/test"},
+    "nfcorpus": {
+        "train": "beir/nfcorpus/train",
+        "dev": "beir/nfcorpus/dev",
+        "test": "beir/nfcorpus/test",
+    },
 }
 
 
@@ -14,11 +18,15 @@ def available_datasets() -> tuple[str, ...]:
     return tuple(_DATASETS)
 
 
-def load_beir(name: str) -> Benchmark:
+def load_beir(name: str, split: str = "test") -> Benchmark:
     try:
-        dataset_id = _DATASETS[name]
+        dataset_id = _DATASETS[name][split]
     except KeyError as error:
-        raise ValueError(f"Unknown dataset {name!r}; choose from {', '.join(_DATASETS)}") from error
+        choices = ", ".join(_DATASETS.get(name, {}))
+        if not choices:
+            available = ", ".join(_DATASETS)
+            raise ValueError(f"Unknown dataset {name!r}; choose from {available}") from error
+        raise ValueError(f"Unknown {name!r} split {split!r}; choose from {choices}") from error
     dataset = ir_datasets.load(dataset_id)
     documents = [
         Document(
@@ -37,7 +45,13 @@ def load_beir(name: str) -> Benchmark:
     evaluated_queries = {
         query_id: text for query_id, text in queries.items() if qrels.get(query_id)
     }
-    return Benchmark(name=name, documents=documents, queries=evaluated_queries, qrels=qrels)
+    return Benchmark(
+        name=name,
+        split=split,
+        documents=documents,
+        queries=evaluated_queries,
+        qrels=qrels,
+    )
 
 
 def iter_document_texts(documents: Iterable[Document]) -> Iterable[str]:

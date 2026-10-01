@@ -75,5 +75,16 @@ def evaluate(
     typer.echo(f"Results written to {output}")
 
 
+@app.command()
+def phase2(
+    dataset: Annotated[str, typer.Argument(help=f"One of: {', '.join(available_datasets())}")],
+) -> None:
+    """Train and evaluate cross-encoder and learning-to-rank methods."""
+    from evidence_rag.phase2 import evaluate_phase2
+
+    output = evaluate_phase2(dataset, Settings())
+    typer.echo(f"Phase 2 results written to {output}")
+
+
 if __name__ == "__main__":
     app()

@@ -22,6 +22,7 @@ class Benchmark:
     documents: list[Document]
     queries: dict[str, str]
     qrels: dict[str, dict[str, int]]
+    split: str = "test"
     _documents_by_id: dict[str, Document] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:

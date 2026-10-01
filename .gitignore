@@ -41,6 +41,7 @@ data/raw/
 data/cache/
 data/indexes/
 data/results/
+data/phase2/
 data/*.sqlite3
 data/*.sqlite3-*
 *.csv

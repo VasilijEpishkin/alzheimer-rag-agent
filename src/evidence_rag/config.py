@@ -18,15 +18,30 @@ class Settings(BaseSettings):
     ncbi_tool: str = "evidence-rag"
     medcpt_article_model: str = "ncbi/MedCPT-Article-Encoder"
     medcpt_query_model: str = "ncbi/MedCPT-Query-Encoder"
+    medcpt_cross_model: str = "ncbi/MedCPT-Cross-Encoder"
     embedding_batch_size: int = Field(default=16, ge=1, le=16)
+    cross_encoder_batch_size: int = Field(default=8, ge=1, le=16)
     retrieval_k: int = Field(default=100, ge=10, le=1000)
+    ltr_candidate_k: int = Field(default=20, ge=10, le=100)
+    ltr_iterations: int = Field(default=100, ge=10, le=1000)
     rrf_k: int = Field(default=60, ge=1)
     bootstrap_samples: int = Field(default=10_000, ge=100)
     permutation_samples: int = Field(default=10_000, ge=100)
     random_seed: int = 42
     mlflow_tracking_uri: str = "mlruns"
     mlflow_experiment: str = "phase-1-retrieval"
+    phase2_mlflow_experiment: str = "phase-2-reranking-ltr"
+
+    @property
+    def phase2_dir(self) -> Path:
+        return self.data_dir / "phase2"
 
     def ensure_directories(self) -> None:
-        for path in (self.data_dir, self.cache_dir, self.index_dir, self.results_dir):
+        for path in (
+            self.data_dir,
+            self.cache_dir,
+            self.index_dir,
+            self.results_dir,
+            self.phase2_dir,
+        ):
             path.mkdir(parents=True, exist_ok=True)
