@@ -1,4 +1,5 @@
 import gc
+import logging
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -8,6 +9,7 @@ import numpy as np
 from evidence_rag.models import Document
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
+_LOGGER = logging.getLogger(__name__)
 _EVIDENCE_LEVELS = {
     "meta-analysis": 5.0,
     "systematic review": 5.0,
@@ -97,12 +99,13 @@ class MedCPTCrossEncoder:
         if batch_size > 16:
             raise ValueError("Cross-encoder batch size must not exceed 16")
         scores: list[float] = []
+        total_batches = (len(documents) + batch_size - 1) // batch_size
         with self.torch.inference_mode():
-            for start in range(0, len(documents), batch_size):
-                batch = documents[start : start + batch_size]
+            for batch, start in enumerate(range(0, len(documents), batch_size), 1):
+                batch_documents = documents[start : start + batch_size]
                 inputs = self.tokenizer(
-                    [query] * len(batch),
-                    [document.retrieval_text for document in batch],
+                    [query] * len(batch_documents),
+                    [document.retrieval_text for document in batch_documents],
                     padding=True,
                     truncation=True,
                     max_length=512,
@@ -111,6 +114,8 @@ class MedCPTCrossEncoder:
                 logits = self.model(**inputs).logits.reshape(-1)
                 scores.extend(float(value) for value in logits.cpu())
                 del inputs, logits
+                if batch % 10 == 0 or batch == total_batches:
+                    _LOGGER.info("Cross-encoder scored batch %d/%d", batch, total_batches)
         return scores
 
     def close(self) -> None:

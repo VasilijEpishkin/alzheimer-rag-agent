@@ -1,6 +1,9 @@
 import gc
+import hashlib
 import json
+import logging
 import os
+import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -29,6 +32,7 @@ _VARIANTS = {
     "relevance": RELEVANCE_FEATURES,
     "evidence": FEATURE_NAMES,
 }
+_LOGGER = logging.getLogger(__name__)
 
 
 def _tracking_uri(uri: str) -> str:
@@ -45,54 +49,64 @@ def _candidate_cache_path(settings: Settings, dataset: str, split: str) -> Path:
 
 def _save_candidates(path: Path, rows: Sequence[Candidate], model_name: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(
-        path,
-        query_ids=np.asarray([row.query_id for row in rows]),
-        doc_ids=np.asarray([row.doc_id for row in rows]),
-        bm25_scores=np.asarray([row.bm25_score for row in rows], dtype=np.float32),
-        dense_scores=np.asarray([row.dense_score for row in rows], dtype=np.float32),
-        bm25_ranks=np.asarray([row.bm25_rank for row in rows], dtype=np.int32),
-        dense_ranks=np.asarray([row.dense_rank for row in rows], dtype=np.int32),
-        cross_scores=np.asarray([row.cross_score for row in rows], dtype=np.float32),
-        cross_model=np.asarray(model_name),
-    )
+    fd, temporary = tempfile.mkstemp(dir=path.parent, suffix=".npz")
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            np.savez_compressed(
+                stream,
+                query_ids=np.asarray([row.query_id for row in rows]),
+                doc_ids=np.asarray([row.doc_id for row in rows]),
+                bm25_scores=np.asarray([row.bm25_score for row in rows], dtype=np.float32),
+                dense_scores=np.asarray([row.dense_score for row in rows], dtype=np.float32),
+                bm25_ranks=np.asarray([row.bm25_rank for row in rows], dtype=np.int32),
+                dense_ranks=np.asarray([row.dense_rank for row in rows], dtype=np.int32),
+                cross_scores=np.asarray([row.cross_score for row in rows], dtype=np.float32),
+                cross_model=np.asarray(model_name),
+            )
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 def _load_candidates(path: Path, model_name: str) -> list[Candidate] | None:
     if not path.exists():
         return None
-    with np.load(path, allow_pickle=False) as data:
-        if str(data["cross_model"]) != model_name:
-            return None
-        return [
-            Candidate(
-                query_id=str(query_id),
-                doc_id=str(doc_id),
-                bm25_score=float(bm25_score),
-                dense_score=float(dense_score),
-                bm25_rank=int(bm25_rank),
-                dense_rank=int(dense_rank),
-                cross_score=float(cross_score),
-            )
-            for (
-                query_id,
-                doc_id,
-                bm25_score,
-                dense_score,
-                bm25_rank,
-                dense_rank,
-                cross_score,
-            ) in zip(
-                data["query_ids"],
-                data["doc_ids"],
-                data["bm25_scores"],
-                data["dense_scores"],
-                data["bm25_ranks"],
-                data["dense_ranks"],
-                data["cross_scores"],
-                strict=True,
-            )
-        ]
+    try:
+        with np.load(path, allow_pickle=False) as data:
+            if str(data["cross_model"]) != model_name:
+                return None
+            return [
+                Candidate(
+                    query_id=str(query_id),
+                    doc_id=str(doc_id),
+                    bm25_score=float(bm25_score),
+                    dense_score=float(dense_score),
+                    bm25_rank=int(bm25_rank),
+                    dense_rank=int(dense_rank),
+                    cross_score=float(cross_score),
+                )
+                for (
+                    query_id,
+                    doc_id,
+                    bm25_score,
+                    dense_score,
+                    bm25_rank,
+                    dense_rank,
+                    cross_score,
+                ) in zip(
+                    data["query_ids"],
+                    data["doc_ids"],
+                    data["bm25_scores"],
+                    data["dense_scores"],
+                    data["bm25_ranks"],
+                    data["dense_ranks"],
+                    data["cross_scores"],
+                    strict=True,
+                )
+            ]
+    except (OSError, ValueError, KeyError):
+        return None
 
 
 def _retrieve_candidates(
@@ -135,35 +149,102 @@ def _retrieve_candidates(
 def _cross_score_candidates(
     benchmark: Benchmark, rows: Sequence[Candidate], settings: Settings
 ) -> list[Candidate]:
-    scorer = MedCPTCrossEncoder(settings.medcpt_cross_model)
+    scorer = None
     documents = benchmark.documents_by_id
     scored: list[Candidate] = []
+    checkpoint_dir = settings.phase2_dir / "cross-scores" / benchmark.name / benchmark.split
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    groups: list[tuple[str, Sequence[Candidate]]] = []
+    start = 0
+    while start < len(rows):
+        end = start + 1
+        while end < len(rows) and rows[end].query_id == rows[start].query_id:
+            end += 1
+        groups.append((rows[start].query_id, rows[start:end]))
+        start = end
     try:
-        start = 0
-        while start < len(rows):
-            query_id = rows[start].query_id
-            end = start
-            while end < len(rows) and rows[end].query_id == query_id:
-                end += 1
-            group = rows[start:end]
-            scores = scorer.score(
-                benchmark.queries[query_id],
-                [documents[row.doc_id] for row in group],
-                settings.cross_encoder_batch_size,
-            )
+        for index, (query_id, group) in enumerate(groups, 1):
+            input_hash = hashlib.sha256(
+                json.dumps(
+                    [
+                        settings.medcpt_cross_model,
+                        benchmark.queries[query_id],
+                        [
+                            [row.doc_id, documents[row.doc_id].retrieval_text]
+                            for row in group
+                        ],
+                    ],
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ).encode()
+            ).hexdigest()
+            checkpoint = checkpoint_dir / f"{hashlib.sha256(query_id.encode()).hexdigest()}.npz"
+            scores = None
+            if checkpoint.exists():
+                try:
+                    with np.load(checkpoint, allow_pickle=False) as data:
+                        if str(data["input_hash"]) == input_hash:
+                            scores = data["scores"].tolist()
+                except (OSError, ValueError, KeyError):
+                    pass
+                if scores is not None and len(scores) != len(group):
+                    scores = None
+            if scores is None:
+                if scorer is None:
+                    scorer = MedCPTCrossEncoder(settings.medcpt_cross_model)
+                scores = scorer.score(
+                    benchmark.queries[query_id],
+                    [documents[row.doc_id] for row in group],
+                    settings.cross_encoder_batch_size,
+                )
+                fd, temporary = tempfile.mkstemp(dir=checkpoint_dir, suffix=".npz")
+                try:
+                    with os.fdopen(fd, "wb") as stream:
+                        np.savez_compressed(
+                            stream, input_hash=np.asarray(input_hash), scores=scores
+                        )
+                    os.replace(temporary, checkpoint)
+                finally:
+                    if os.path.exists(temporary):
+                        os.unlink(temporary)
             scored.extend(
                 replace(row, cross_score=score)
                 for row, score in zip(group, scores, strict=True)
             )
-            start = end
+            if index % 10 == 0 or index == len(groups):
+                _LOGGER.info("Cross-encoder scored %d/%d queries", index, len(groups))
     finally:
-        scorer.close()
+        if scorer is not None:
+            scorer.close()
     return scored
 
 
 def _get_candidates(benchmark: Benchmark, settings: Settings) -> list[Candidate]:
     path = _candidate_cache_path(settings, benchmark.name, benchmark.split)
-    cached = _load_candidates(path, settings.medcpt_cross_model)
+    cache_model = "|".join(
+        (
+            settings.medcpt_cross_model,
+            settings.medcpt_query_model,
+            str(settings.ltr_candidate_k),
+            str(settings.rrf_k),
+            benchmark.name,
+            benchmark.split,
+            hashlib.sha256(
+                json.dumps(benchmark.queries, sort_keys=True, ensure_ascii=False).encode()
+            ).hexdigest(),
+            hashlib.sha256(
+                json.dumps(
+                    [
+                        [document.doc_id, document.retrieval_text]
+                        for document in benchmark.documents
+                    ],
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ).encode()
+            ).hexdigest(),
+        )
+    )
+    cached = _load_candidates(path, cache_model)
     if cached is not None:
         return cached
     dataset_index = settings.index_dir / benchmark.name
@@ -174,7 +255,7 @@ def _get_candidates(benchmark: Benchmark, settings: Settings) -> list[Candidate]
         DenseIndex(dataset_index / "dense"),
     )
     rows = _cross_score_candidates(benchmark, rows, settings)
-    _save_candidates(path, rows, settings.medcpt_cross_model)
+    _save_candidates(path, rows, cache_model)
     return rows
 
 
