@@ -13,14 +13,17 @@ def train_and_predict(
     train_features: np.ndarray,
     train_labels: np.ndarray,
     train_group_sizes: Sequence[int],
+    validation_features: np.ndarray,
+    validation_labels: np.ndarray,
+    validation_group_sizes: Sequence[int],
     test_features: np.ndarray,
     feature_names: Sequence[str],
     model_path: Path,
     *,
     seed: int,
     iterations: int,
-) -> np.ndarray:
-    """Train one ranker, predict once, persist it, then release its memory."""
+) -> tuple[np.ndarray, int]:
+    """Train one ranker with held-out query groups, predict once, and persist it."""
     model_path.parent.mkdir(parents=True, exist_ok=True)
     if kind == "catboost":
         from catboost import CatBoostRanker, Pool
@@ -30,6 +33,12 @@ def train_and_predict(
             train_features,
             label=train_labels,
             group_id=group_ids,
+            feature_names=list(feature_names),
+        )
+        validation_pool = Pool(
+            validation_features,
+            label=validation_labels,
+            group_id=np.repeat(np.arange(len(validation_group_sizes)), validation_group_sizes),
             feature_names=list(feature_names),
         )
         model = CatBoostRanker(
@@ -42,8 +51,14 @@ def train_and_predict(
             verbose=False,
             allow_writing_files=False,
         )
-        model.fit(train_pool)
+        model.fit(
+            train_pool,
+            eval_set=validation_pool,
+            early_stopping_rounds=50,
+            use_best_model=True,
+        )
         predictions = np.asarray(model.predict(test_features), dtype=np.float64)
+        best_iteration = int(model.best_iteration_) + 1
         model.save_model(model_path)
     elif kind == "xgboost":
         from xgboost import XGBRanker
@@ -56,17 +71,21 @@ def train_and_predict(
             random_state=seed,
             n_jobs=2,
             tree_method="hist",
+            early_stopping_rounds=50,
         )
         model.fit(
             train_features,
             train_labels,
             group=np.asarray(train_group_sizes, dtype=np.int32),
+            eval_set=[(validation_features, validation_labels)],
+            eval_group=[np.asarray(validation_group_sizes, dtype=np.int32)],
             verbose=False,
         )
         predictions = np.asarray(model.predict(test_features), dtype=np.float64)
+        best_iteration = int(model.best_iteration) + 1
         model.save_model(model_path)
     else:
         raise ValueError(f"Unknown LTR model kind: {kind}")
     del model
     gc.collect()
-    return predictions
+    return predictions, best_iteration

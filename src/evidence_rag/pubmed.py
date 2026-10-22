@@ -5,6 +5,8 @@ import threading
 import time
 import xml.etree.ElementTree as ET
 from collections.abc import Iterable
+from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -12,7 +14,8 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from evidence_rag.models import Document
+from evidence_rag.config import Settings
+from evidence_rag.models import Benchmark, Document
 
 _EUTILS = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 _RETRACTION_TYPES = {"retracted publication", "retraction of publication"}
@@ -151,6 +154,7 @@ def _year(article: ET.Element) -> int | None:
 def parse_pubmed_xml(payload: bytes) -> list[Document]:
     root = ET.fromstring(payload)
     documents: list[Document] = []
+    fetched_at = datetime.now(UTC).isoformat()
     for record in root.findall(".//PubmedArticle"):
         citation = record.find("MedlineCitation")
         if citation is None:
@@ -183,6 +187,7 @@ def parse_pubmed_xml(payload: bytes) -> list[Document]:
                 ),
                 publication_types=publication_types,
                 is_retracted=is_retracted,
+                metadata_fetched_at=fetched_at,
             )
         )
     return documents
@@ -195,13 +200,16 @@ def store_documents(path: Path, documents: Iterable[Document]) -> int:
         "CREATE TABLE IF NOT EXISTS articles ("
         "pmid TEXT PRIMARY KEY, title TEXT NOT NULL, abstract TEXT NOT NULL, year INTEGER, "
         "mesh_headings TEXT NOT NULL, publication_types TEXT NOT NULL, "
-        "is_retracted INTEGER NOT NULL)"
+        "is_retracted INTEGER NOT NULL, metadata_fetched_at TEXT)"
     )
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(articles)")}
+    if "metadata_fetched_at" not in columns:
+        connection.execute("ALTER TABLE articles ADD COLUMN metadata_fetched_at TEXT")
     count = 0
     with connection:
         for document in documents:
             connection.execute(
-                "INSERT OR REPLACE INTO articles VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT OR REPLACE INTO articles VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     document.doc_id,
                     document.title,
@@ -210,8 +218,123 @@ def store_documents(path: Path, documents: Iterable[Document]) -> int:
                     json.dumps(document.mesh_headings),
                     json.dumps(document.publication_types),
                     int(document.is_retracted),
+                    document.metadata_fetched_at or datetime.now(UTC).isoformat(),
                 ),
             )
             count += 1
     connection.close()
     return count
+
+
+def _load_cached_documents(path: Path, pmids: list[str]) -> dict[str, Document]:
+    if not path.exists():
+        return {}
+    connection = sqlite3.connect(path)
+    exists = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'articles'"
+    ).fetchone()
+    if exists is None:
+        connection.close()
+        return {}
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(articles)")}
+    if "metadata_fetched_at" not in columns:
+        connection.execute("ALTER TABLE articles ADD COLUMN metadata_fetched_at TEXT")
+    output: dict[str, Document] = {}
+    for start in range(0, len(pmids), 500):
+        batch = pmids[start : start + 500]
+        placeholders = ",".join("?" for _ in batch)
+        for row in connection.execute(
+            "SELECT pmid, title, abstract, year, mesh_headings, publication_types, "
+            "metadata_fetched_at, "
+            f"is_retracted FROM articles WHERE pmid IN ({placeholders})",
+            batch,
+        ):
+            pmid, title, abstract, year, mesh, publication_types, fetched_at, is_retracted = row
+            output[str(pmid)] = Document(
+                doc_id=str(pmid),
+                title=title,
+                text=abstract,
+                year=year,
+                mesh_headings=tuple(json.loads(mesh)),
+                publication_types=tuple(json.loads(publication_types)),
+                is_retracted=bool(is_retracted),
+                metadata_fetched_at=fetched_at,
+            )
+    connection.close()
+    return output
+
+
+def load_pubmed_documents(path: Path) -> list[Document]:
+    if not path.exists():
+        return []
+    connection = sqlite3.connect(path)
+    exists = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'articles'"
+    ).fetchone()
+    if exists is None:
+        connection.close()
+        return []
+    pmids = [str(row[0]) for row in connection.execute("SELECT pmid FROM articles ORDER BY pmid")]
+    connection.close()
+    cached = _load_cached_documents(path, pmids)
+    return [replace(document, pubmed_id=document.doc_id) for document in cached.values()]
+
+
+def load_pubmed_benchmark(settings: Settings) -> Benchmark:
+    """Load the ingested local PubMed corpus for query-time retrieval."""
+    return Benchmark("pubmed", load_pubmed_documents(settings.pubmed_db), {}, {})
+
+
+def enrich_benchmark_with_pubmed(
+    benchmark: Benchmark, settings: Settings, *, fetch_missing: bool = True
+) -> dict[str, int | float]:
+    """Join NFCorpus PubMed metadata from the local ingest DB, fetching missing PMIDs once."""
+    pmids = sorted({document.pubmed_id for document in benchmark.documents if document.pubmed_id})
+    metadata = _load_cached_documents(settings.pubmed_db, pmids)
+    missing = [pmid for pmid in pmids if pmid not in metadata]
+    if fetch_missing and missing:
+        client = PubMedClient(
+            settings.ncbi_cache_db,
+            api_key=settings.ncbi_api_key,
+            email=settings.ncbi_email,
+            tool=settings.ncbi_tool,
+        )
+        try:
+            fetched = list(client.fetch(missing))
+        finally:
+            client.close()
+        store_documents(settings.pubmed_db, fetched)
+        metadata.update({document.doc_id: document for document in fetched})
+
+    benchmark.documents = [
+        replace(
+            document,
+            year=record.year,
+            mesh_headings=record.mesh_headings,
+            publication_types=record.publication_types,
+            is_retracted=record.is_retracted,
+            metadata_fetched_at=record.metadata_fetched_at,
+        )
+        if document.pubmed_id in metadata
+        else document
+        for document in benchmark.documents
+        for record in [metadata.get(document.pubmed_id)]
+    ]
+    benchmark.__post_init__()
+    enriched = sum(
+        document.pubmed_id in metadata
+        for document in benchmark.documents
+        if document.pubmed_id
+    )
+    metadata_coverage = sum(
+        bool(document.publication_types or document.year is not None or document.mesh_headings)
+        for document in benchmark.documents
+    )
+    return {
+        "documents": len(benchmark.documents),
+        "pmid_linked_documents": len(pmids),
+        "metadata_records": enriched,
+        "metadata_coverage": metadata_coverage / len(benchmark.documents)
+        if benchmark.documents
+        else 0.0,
+    }

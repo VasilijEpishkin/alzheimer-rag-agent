@@ -34,7 +34,7 @@ def ingest(
 
 @app.command()
 def index(
-    dataset: Annotated[str, typer.Argument(help=f"One of: {', '.join(available_datasets())}")],
+    dataset: Annotated[str, typer.Argument(help="One of: scifact, nfcorpus, pubmed")],
     method: Annotated[str, typer.Option(help="bm25, dense, or all")] = "all",
 ) -> None:
     """Build disk-backed indexes for a BEIR dataset."""
@@ -45,18 +45,27 @@ def index(
         raise typer.BadParameter("method must be bm25, dense, or all")
     settings = Settings()
     settings.ensure_directories()
-    benchmark = load_beir(dataset)
+    if dataset == "pubmed":
+        from evidence_rag.pubmed import load_pubmed_documents
+
+        documents = load_pubmed_documents(settings.pubmed_db)
+        if not documents:
+            raise typer.BadParameter("PubMed corpus is empty; run `evidence-rag ingest` first")
+    elif dataset in available_datasets():
+        documents = load_beir(dataset).documents
+    else:
+        raise typer.BadParameter("dataset must be scifact, nfcorpus, or pubmed")
     base = settings.index_dir / dataset
     if method in {"bm25", "all"}:
-        typer.echo(f"Building BM25 for {dataset} ({len(benchmark.documents)} documents)")
-        BM25Index.build(benchmark.documents).save(base / "bm25")
+        typer.echo(f"Building BM25 for {dataset} ({len(documents)} documents)")
+        BM25Index.build(documents).save(base / "bm25")
     if method in {"dense", "all"}:
         typer.echo(
             f"Encoding {dataset} in batches of {settings.embedding_batch_size}; "
             "the article encoder is released after indexing"
         )
         DenseIndex.build(
-            benchmark.documents,
+            documents,
             base / "dense",
             settings.medcpt_article_model,
             settings.embedding_batch_size,
@@ -84,6 +93,26 @@ def phase2(
 
     output = evaluate_phase2(dataset, Settings())
     typer.echo(f"Phase 2 results written to {output}")
+
+
+@app.command()
+def answerability(
+    dataset: Annotated[str, typer.Argument(help=f"One of: {', '.join(available_datasets())}")],
+) -> None:
+    """Train, calibrate, and evaluate the evidence sufficiency model."""
+    from evidence_rag.answerability import evaluate_answerability
+
+    output = evaluate_answerability(dataset, Settings())
+    typer.echo(f"Answerability results written to {output}")
+
+
+@app.command()
+def stance_evaluate() -> None:
+    """Evaluate the stance model on labelled SciFact development claims."""
+    from evidence_rag.stance_evaluation import evaluate_stance
+
+    output = evaluate_stance(Settings())
+    typer.echo(f"Stance results written to {output}")
 
 
 if __name__ == "__main__":

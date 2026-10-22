@@ -2,10 +2,65 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
-from evidence_rag.answerability import compute_ece, reliability_diagram
+import evidence_rag.answerability as answerability
+from evidence_rag.answerability import (
+    aggregate_answerability_features,
+    compute_ece,
+    reliability_diagram,
+)
+
+
+def test_aggregate_answerability_features_uses_top_five():
+    features = np.arange(14, dtype=np.float32).reshape(7, 2)
+    aggregated = aggregate_answerability_features(features)
+    np.testing.assert_array_equal(aggregated, [4.0, 5.0, 8.0, 9.0])
+
+
+def test_answerability_model_uses_separate_isotonic_calibration(tmp_path, monkeypatch):
+    class FakePool:
+        def __init__(self, features, **kwargs):
+            self.features = features
+
+    class FakeClassifier:
+        def __init__(self, **kwargs):
+            pass
+
+        def fit(self, pool):
+            self.train_features = pool.features
+
+        def predict_proba(self, features):
+            positive = np.asarray(features)[:, 0]
+            return np.column_stack((1 - positive, positive))
+
+        def save_model(self, path):
+            Path(path).write_text("fake model")
+
+        def load_model(self, path):
+            assert Path(path).read_text() == "fake model"
+
+    monkeypatch.setattr(answerability, "CatBoostClassifier", FakeClassifier)
+    monkeypatch.setattr(answerability, "Pool", FakePool)
+    model_path = tmp_path / "answerability.cbm"
+    answerability._train_answerability_model(
+        np.array([[0.1], [0.9]]),
+        np.array([0, 1]),
+        np.array([[0.2], [0.8]]),
+        np.array([0, 1]),
+        model_path,
+        seed=7,
+        iterations=10,
+    )
+    calibrated = answerability.predict_answerability(np.array([[0.5]]), model_path)
+    np.testing.assert_allclose(calibrated, [0.5])
+
+
+def test_compute_ece_includes_zero_probability():
+    assert compute_ece(np.array([0.0]), np.array([1])) == pytest.approx(1.0)
 
 
 def test_compute_ece_perfect_calibration():

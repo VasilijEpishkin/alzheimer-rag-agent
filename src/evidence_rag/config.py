@@ -23,8 +23,8 @@ class Settings(BaseSettings):
     embedding_batch_size: int = Field(default=16, ge=1, le=16)
     cross_encoder_batch_size: int = Field(default=8, ge=1, le=16)
     retrieval_k: int = Field(default=100, ge=10, le=1000)
-    ltr_candidate_k: int = Field(default=20, ge=10, le=100)
-    ltr_iterations: int = Field(default=100, ge=10, le=1000)
+    ltr_candidate_k: int = Field(default=100, ge=10, le=100)
+    ltr_iterations: int = Field(default=500, ge=300, le=1000)
     rrf_k: int = Field(default=60, ge=1)
     bootstrap_samples: int = Field(default=10_000, ge=100)
     permutation_samples: int = Field(default=10_000, ge=100)
@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     mlflow_tracking_uri: str = "mlruns"
     mlflow_experiment: str = "phase-1-retrieval"
     phase2_mlflow_experiment: str = "phase-2-reranking-ltr"
+    phase3_mlflow_experiment: str = "phase-3-answerability"
 
     @property
     def phase2_dir(self) -> Path:

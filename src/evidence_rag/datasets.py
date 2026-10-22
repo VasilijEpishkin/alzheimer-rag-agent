@@ -1,4 +1,5 @@
 from collections.abc import Iterable
+from urllib.parse import urlparse
 
 import ir_datasets
 
@@ -33,6 +34,7 @@ def load_beir(name: str, split: str = "test") -> Benchmark:
             doc_id=str(document.doc_id),
             title=getattr(document, "title", "") or "",
             text=getattr(document, "text", "") or "",
+            pubmed_id=_pubmed_id(getattr(document, "url", "") or ""),
         )
         for document in dataset.docs_iter()
     ]
@@ -52,6 +54,21 @@ def load_beir(name: str, split: str = "test") -> Benchmark:
         queries=evaluated_queries,
         qrels=qrels,
     )
+
+
+def _pubmed_id(url: str) -> str | None:
+    parsed = urlparse(url)
+    if parsed.hostname not in {
+        "www.ncbi.nlm.nih.gov",
+        "ncbi.nlm.nih.gov",
+        "pubmed.ncbi.nlm.nih.gov",
+    }:
+        return None
+    parts = parsed.path.rstrip("/").split("/")
+    if len(parts) < 3 or parts[-2].casefold() != "pubmed":
+        return None
+    identifier = parts[-1]
+    return identifier if identifier.isdecimal() else None
 
 
 def iter_document_texts(documents: Iterable[Document]) -> Iterable[str]:

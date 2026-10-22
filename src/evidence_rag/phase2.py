@@ -18,6 +18,7 @@ from evidence_rag.fusion import reciprocal_rank_fusion
 from evidence_rag.ltr import train_and_predict
 from evidence_rag.metrics import aggregate, per_query_metrics
 from evidence_rag.models import Benchmark
+from evidence_rag.pubmed import enrich_benchmark_with_pubmed
 from evidence_rag.reranking import (
     FEATURE_NAMES,
     RELEVANCE_FEATURES,
@@ -301,6 +302,40 @@ def _training_rows(
     return features[indices], labels[indices], group_sizes, skipped
 
 
+def _holdout_training_queries(
+    features: np.ndarray,
+    labels: np.ndarray,
+    query_ids: Sequence[str],
+    seed: int,
+) -> tuple[np.ndarray, np.ndarray, list[str], np.ndarray, np.ndarray, list[str]]:
+    mixed_queries: list[str] = []
+    start = 0
+    while start < len(query_ids):
+        end = start + 1
+        while end < len(query_ids) and query_ids[end] == query_ids[start]:
+            end += 1
+        group_labels = labels[start:end]
+        if np.any(group_labels > 0) and np.any(group_labels == 0):
+            mixed_queries.append(query_ids[start])
+        start = end
+    if len(mixed_queries) < 2:
+        raise ValueError("At least two judged training queries are needed for a dev holdout")
+    rng = np.random.default_rng(seed)
+    rng.shuffle(mixed_queries)
+    validation_count = min(len(mixed_queries) - 1, max(1, round(len(mixed_queries) * 0.2)))
+    validation_queries = set(mixed_queries[:validation_count])
+    validation_mask = np.asarray([query_id in validation_queries for query_id in query_ids])
+    train_mask = ~validation_mask
+    return (
+        features[train_mask],
+        labels[train_mask],
+        [query_id for query_id, keep in zip(query_ids, train_mask, strict=True) if keep],
+        features[validation_mask],
+        labels[validation_mask],
+        [query_id for query_id, keep in zip(query_ids, validation_mask, strict=True) if keep],
+    )
+
+
 def _rankings(
     query_ids: Sequence[str], doc_ids: Sequence[str], scores: Sequence[float]
 ) -> dict[str, list[str]]:
@@ -311,6 +346,40 @@ def _rankings(
         query_id: [doc_id for doc_id, _ in sorted(values, key=lambda item: (-item[1], item[0]))]
         for query_id, values in grouped.items()
     }
+
+
+def _counterfactual_movements(
+    relevance: Mapping[str, Sequence[str]],
+    evidence: Mapping[str, Sequence[str]],
+    benchmark: Benchmark,
+) -> list[dict[str, Any]]:
+    movements: list[dict[str, Any]] = []
+    for query_id, relevance_ranking in relevance.items():
+        evidence_ranking = evidence.get(query_id, ())
+        relevance_ranks = {doc_id: rank for rank, doc_id in enumerate(relevance_ranking, 1)}
+        evidence_ranks = {doc_id: rank for rank, doc_id in enumerate(evidence_ranking, 1)}
+        for doc_id in sorted(set(relevance_ranking[:10]) | set(evidence_ranking[:10])):
+            relevance_rank = relevance_ranks.get(doc_id)
+            evidence_rank = evidence_ranks.get(doc_id)
+            if relevance_rank == evidence_rank:
+                continue
+            document = benchmark.documents_by_id[doc_id]
+            movements.append(
+                {
+                    "query_id": query_id,
+                    "doc_id": doc_id,
+                    "relevance_rank": relevance_rank,
+                    "evidence_rank": evidence_rank,
+                    "rank_delta": relevance_rank - evidence_rank,
+                    "evidence_feature_context": {
+                        "publication_types": list(document.publication_types),
+                        "year": document.year,
+                        "mesh_headings": list(document.mesh_headings),
+                        "is_retracted": document.is_retracted,
+                    },
+                }
+            )
+    return movements
 
 
 def _method_result(
@@ -392,18 +461,22 @@ def _log_runs(
                 {
                     "dataset": result["dataset"],
                     "train_split": result["train_split"],
+                    "validation_split": result["validation_split"],
                     "test_split": "test",
                     "method": method,
                     "candidate_k": result["candidate_k"],
                     "cross_model": settings.medcpt_cross_model,
                     "iterations": settings.ltr_iterations if method in model_paths else 0,
                     "training_queries": result["training_queries"],
+                    "validation_queries": result["validation_queries"],
                     "skipped_training_queries": result["skipped_training_queries"],
                 }
             )
             mlflow.log_metrics(
                 {name.replace("@", "_at_"): value for name, value in values["metrics"].items()}
             )
+            if "best_iteration" in values:
+                mlflow.log_metric("best_iteration", values["best_iteration"])
             mlflow.log_metric(
                 "evidence_metadata_coverage_at_10",
                 values["safety"]["evidence_metadata_coverage_at_10"],
@@ -417,15 +490,50 @@ def evaluate_phase2(name: str, settings: Settings) -> Path:
     settings.ensure_directories()
     train = load_beir(name, split="train")
     test = load_beir(name, split="test")
+    pubmed_coverage = {
+        "train": enrich_benchmark_with_pubmed(train, settings),
+        "test": enrich_benchmark_with_pubmed(test, settings),
+    }
     train_rows = _get_candidates(train, settings)
     test_rows = _get_candidates(test, settings)
     train_features, train_labels, train_query_ids, _ = _matrix(train, train_rows)
     test_features, _, test_query_ids, test_doc_ids = _matrix(test, test_rows)
+    try:
+        validation = load_beir(name, split="dev")
+    except ValueError as error:
+        if "Unknown" not in str(error) or "split" not in str(error):
+            raise
+        (
+            train_features,
+            train_labels,
+            train_query_ids,
+            validation_features,
+            validation_labels,
+            validation_query_ids,
+        ) = _holdout_training_queries(
+            train_features, train_labels, train_query_ids, settings.random_seed
+        )
+        validation_rows: list[Candidate] = []
+        validation_split = "stratified train query holdout"
+    else:
+        validation_rows = _get_candidates(validation, settings)
+        pubmed_coverage["dev"] = enrich_benchmark_with_pubmed(validation, settings)
+        (
+            validation_features,
+            validation_labels,
+            validation_query_ids,
+            _,
+        ) = _matrix(validation, validation_rows)
+        validation_split = "dev"
     train_features, train_labels, group_sizes, skipped = _training_rows(
         train_features, train_labels, train_query_ids
     )
+    validation_features, validation_labels, validation_group_sizes, skipped_validation = (
+        _training_rows(validation_features, validation_labels, validation_query_ids)
+    )
 
     methods: dict[str, dict[str, Any]] = {}
+    rankings_by_method: dict[str, dict[str, list[str]]] = {}
     cross_rankings = _rankings(
         test_query_ids,
         test_doc_ids,
@@ -439,36 +547,63 @@ def evaluate_phase2(name: str, settings: Settings) -> Path:
             method = f"{kind}_{variant}"
             suffix = "cbm" if kind == "catboost" else "json"
             model_path = settings.phase2_dir / "models" / f"{name}-{method}.{suffix}"
-            predictions = train_and_predict(
+            predictions, best_iteration = train_and_predict(
                 kind,  # type: ignore[arg-type]
                 train_features[:, indices],
                 train_labels,
                 group_sizes,
+                validation_features[:, indices],
+                validation_labels,
+                validation_group_sizes,
                 test_features[:, indices],
                 feature_names,
                 model_path,
                 seed=settings.random_seed,
                 iterations=settings.ltr_iterations,
             )
-            methods[method] = _method_result(
-                _rankings(test_query_ids, test_doc_ids, predictions.tolist()), test, settings
-            )
+            rankings = _rankings(test_query_ids, test_doc_ids, predictions.tolist())
+            methods[method] = _method_result(rankings, test, settings)
+            methods[method]["best_iteration"] = best_iteration
+            rankings_by_method[method] = rankings
             model_paths[method] = model_path
             del predictions
             gc.collect()
 
+    counterfactuals = {
+        f"{kind}_evidence_vs_relevance": _counterfactual_movements(
+            rankings_by_method[f"{kind}_relevance"],
+            rankings_by_method[f"{kind}_evidence"],
+            test,
+        )
+        for kind in ("catboost", "xgboost")
+    }
+
     result: dict[str, Any] = {
         "dataset": name,
         "train_split": "train",
+        "validation_split": validation_split,
         "test_split": "test",
         "candidate_k": settings.ltr_candidate_k,
         "training_queries": len(group_sizes),
         "skipped_training_queries": skipped,
+        "validation_queries": len(validation_group_sizes),
+        "skipped_validation_queries": skipped_validation,
         "train_candidates": int(sum(group_sizes)),
         "test_queries": len(test.queries),
         "test_candidates": len(test_rows),
+        "pubmed_metadata_coverage": pubmed_coverage,
+        "evidence_metadata_note": (
+            "SciFact has no PMID links; NFCorpus metadata is joined from PubMed by PMID."
+        ),
         "feature_names": list(FEATURE_NAMES),
         "methods": methods,
+        "evidence_counterfactuals": {
+            "interpretation": (
+                "Rank changes with available metadata context; not causal attribution."
+            ),
+            "feature_context": ["publication_types", "year", "mesh_headings", "is_retracted"],
+            "comparisons": counterfactuals,
+        },
     }
     result["paired_permutation_p_values"] = _comparisons(methods, settings)
     output = settings.results_dir / f"{name}-phase2.json"

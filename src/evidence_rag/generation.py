@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any
 
 import requests
 
-from evidence_rag.models import Document
 from evidence_rag.config import Settings
+from evidence_rag.models import Document
 
 
 class OpenRouterClient:
@@ -22,7 +20,7 @@ class OpenRouterClient:
         self.session.headers.update(
             {
                 "Authorization": f"Bearer {api_key}",
-                "HTTP-Referer": "https://github.com/your-repo/evidence-rag",  # Optional, but recommended.
+                "HTTP-Referer": "https://github.com/VasilijEpishkin/alzheimer-rag-agent",
                 "X-Title": "Evidence RAG",
             }
         )
@@ -53,15 +51,15 @@ class OpenRouterClient:
 
 
 def verify_citations(
-    answer: str, retrieved_documents: List[Document]
-) -> List[str]:
-    """Verify that every [PMID] citation in the answer is in the retrieved documents.
+    answer: str, retrieved_documents: list[Document]
+) -> list[str]:
+    """Verify that each [PMID:123] citation is in the retrieved documents.
     Returns a list of unverified PMIDs (empty if all verified).
     """
     import re
 
     # Extract PMIDs from answer in the format [PMID]
-    pmid_pattern = re.compile(r'\[(\d+)\]')
+    pmid_pattern = re.compile(r"\[(?:PMID:)?(\d+)\]")
     cited_pmids = set(pmid_pattern.findall(answer))
 
     retrieved_pmids = {doc.doc_id for doc in retrieved_documents}
@@ -72,57 +70,54 @@ def verify_citations(
 
 def build_generation_prompt(
     query: str,
-    retrieved_documents: List[Document],
-    stance_outputs: List[Any],
+    retrieved_documents: list[Document],
+    stance_outputs: list[Any],
     answerability_prob: float,
 ) -> str:
     """Build a prompt for the LLM that includes context and instructions for citation."""
-    # We'll create a simple prompt that includes the retrieved abstracts and instructions.
-    # In a real system, we might format the context more structured.
     context_parts = []
-    for i, doc in enumerate(retrieved_documents):
+    for index, doc in enumerate(retrieved_documents):
+        stance = stance_outputs[index] if index < len(stance_outputs) else {}
+        stance_text = (
+            ""
+            if not stance
+            else (
+                "\nStance probabilities (support, contradict, neutral): "
+                f"{stance['supports']:.3f}, {stance['contradicts']:.3f}, "
+                f"{stance['neutral']:.3f}"
+            )
+        )
         context_parts.append(
-            f"[PMID:{doc.doc_id}] Title: {doc.title}\nAbstract: {doc.text}\n"
+            f"[PMID:{doc.doc_id}] Title: {doc.title}\nAbstract: {doc.text}"
+            f"{stance_text}\n"
         )
     context = "\n---\n".join(context_parts)
 
-    # We can also include stance and answerability info if desired, but for simplicity we omit.
-    # The instructions: answer the question, cite every claim with [PMID], and only use the provided context.
-    prompt = f"""Answer the following question based on the provided context.
-    Do not use any external knowledge. If the context does not contain enough information to answer, say so.
-    Every factual claim in your answer must be accompanied by a citation in the format [PMID] where the PMID is from the context.
-    Do not cite any PMID that is not in the context.
-
-    Question: {query}
-
-    Context:
-    {context}
-
-    Answer:"""
+    prompt = (
+        "Answer the question using only the supplied evidence. If evidence is insufficient, "
+        "say so. Cite every factual claim with a source in the form [PMID:123], using only "
+        "PMIDs present in the context.\n\n"
+        f"Question: {query}\n\nContext:\n{context}\nAnswer:"
+    )
     return prompt
 
 
 def generate_answer(
     query: str,
-    retrieved_documents: List[Document],
-    stance_outputs: List[Any],
+    retrieved_documents: list[Document],
+    stance_outputs: list[Any],
     answerability_prob: float,
     settings: Settings,
+    abstention_threshold: float = 0.5,
 ) -> str:
     """Generate an answer using OpenRouter and verify citations.
     If answerability_prob is below a threshold, we abstain.
     """
-    # Abstention threshold: we can make this configurable.
-    abstention_threshold = 0.5
     if answerability_prob < abstention_threshold:
         return "I do not have enough evidence to answer this question."
 
-    # If no OpenRouter API key, we cannot generate. In production, we should error.
-    # For now, we return a placeholder to avoid fabricating data.
     if not settings.openrouter_api_key:
-        # In a real system, we might raise an error or return a message.
-        # We choose to return a message indicating the missing key.
-        return "OpenRouter API key not configured. Cannot generate answer."
+        raise RuntimeError("OPENROUTER_API_KEY is required to generate an answer")
 
     client = OpenRouterClient(api_key=settings.openrouter_api_key)
     try:
@@ -135,7 +130,10 @@ def generate_answer(
         if unverified:
             # In a real system, we might want to flag or regenerate.
             # For now, we append a warning.
-            answer += f"\n\nWarning: The following PMIDs were cited but not found in the retrieved context: {', '.join(unverified)}"
+            answer += (
+                "\n\nWarning: Unverified PMIDs: "
+                f"{', '.join(unverified)}"
+            )
         return answer
     finally:
         client.close()

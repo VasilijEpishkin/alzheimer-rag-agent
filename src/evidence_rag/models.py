@@ -10,6 +10,8 @@ class Document:
     mesh_headings: tuple[str, ...] = ()
     publication_types: tuple[str, ...] = ()
     is_retracted: bool = False
+    pubmed_id: str | None = None
+    metadata_fetched_at: str | None = None
 
     @property
     def retrieval_text(self) -> str:

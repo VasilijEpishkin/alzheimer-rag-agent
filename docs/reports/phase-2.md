@@ -1,5 +1,14 @@
 # Phase 2 Report: Cross-Encoder and Learning-to-Rank
 
+## Status update — 2026-10-22
+
+LTR now uses 100 candidates, trains against train judgments, and early-stops on the official dev
+split (NFCorpus) or a deterministic query-level holdout from SciFact train, then evaluates on test.
+PubMed metadata enrichment and the evidence-vs-relevance rank movement report are implemented.
+The small SciFact numbers below are historical smoke results from two queries; they are not
+acceptance results for the current pipeline. Full runs were not completed because the required
+`heavy` runner cannot connect to the local system bus. No full-scale metrics are claimed.
+
 ## Reproducible Commands
 
 From a clean checkout with Python 3.11 and `uv`:

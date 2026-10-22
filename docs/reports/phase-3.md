@@ -7,8 +7,12 @@ uses the revision-pinned [VeriSci claim verifier](https://huggingface.co/rishhh/
 which predicts `SUPPORTS`, `REFUTES`, and `NOT_ENOUGH_INFO`; the adapter maps these to the project's
 support / contradict / neutral order. The model is licensed CC BY-NC 2.0, and its raw softmax scores
 are not calibrated. This environment could not run the model under the repository's required
-memory-capped runner, so no SciFact evaluation metrics are claimed. Answerability training and
-calibration, the claim-evidence ledger, and real OpenRouter evaluation remain incomplete.
+memory-capped runner, so no SciFact evaluation metrics are claimed. Answerability training,
+held-out calibration, and the SQLite claim-evidence ledger are implemented and covered by unit
+tests, but their full-data model runs have not been completed. Real OpenRouter evaluation also
+remains outstanding because no API key or real-question set is available. The FastAPI `/query`
+route selects an explicit dataset, loads the answerability artifact, and uses OpenRouter generation;
+endpoint tests mock retrieval and generation and do not count as live evaluation.
 
 ## Overview
 This phase implements the evidence layer, answerability model, generation with citation verification, and a FastAPI service for the evidence-aware biomedical RAG system.

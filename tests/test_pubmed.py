@@ -1,6 +1,14 @@
 from pathlib import Path
 
-from evidence_rag.pubmed import PubMedClient, parse_pubmed_xml
+from evidence_rag.config import Settings
+from evidence_rag.models import Benchmark, Document
+from evidence_rag.pubmed import (
+    PubMedClient,
+    enrich_benchmark_with_pubmed,
+    load_pubmed_documents,
+    parse_pubmed_xml,
+    store_documents,
+)
 
 XML = b"""<PubmedArticleSet><PubmedArticle><MedlineCitation>
 <PMID>123</PMID><Article><Journal><JournalIssue><PubDate><Year>2024</Year>
@@ -51,3 +59,47 @@ def test_client_uses_cache_without_second_request(tmp_path: Path) -> None:
     assert client.search("test") == ["123"]
     assert session.calls == 1
     client.close()
+
+
+def test_enrich_benchmark_joins_cached_pubmed_metadata(tmp_path: Path) -> None:
+    settings = Settings(pubmed_db=tmp_path / "pubmed.sqlite3")
+    store_documents(
+        settings.pubmed_db,
+        [
+            Document(
+                "25329299",
+                "Cached title",
+                "Cached abstract",
+                2014,
+                ("Alzheimer Disease",),
+                ("Clinical Trial",),
+            )
+        ],
+    )
+    benchmark = Benchmark(
+        "nfcorpus",
+        [Document("MED-10", "BEIR title", "BEIR abstract", pubmed_id="25329299")],
+        {"q1": "query"},
+        {"q1": {}},
+    )
+
+    coverage = enrich_benchmark_with_pubmed(benchmark, settings, fetch_missing=False)
+
+    enriched = benchmark.documents_by_id["MED-10"]
+    assert enriched.title == "BEIR title"
+    assert enriched.year == 2014
+    assert enriched.mesh_headings == ("Alzheimer Disease",)
+    assert enriched.publication_types == ("Clinical Trial",)
+    assert coverage["metadata_records"] == 1
+    assert coverage["metadata_coverage"] == 1.0
+
+
+def test_load_pubmed_documents_preserves_pmid_and_fetch_time(tmp_path: Path) -> None:
+    path = tmp_path / "pubmed.sqlite3"
+    store_documents(path, parse_pubmed_xml(XML))
+
+    documents = load_pubmed_documents(path)
+
+    assert documents[0].doc_id == "123"
+    assert documents[0].pubmed_id == "123"
+    assert documents[0].metadata_fetched_at is not None
