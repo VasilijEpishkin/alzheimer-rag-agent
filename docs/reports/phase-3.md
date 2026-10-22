@@ -13,6 +13,8 @@ tests, but their full-data model runs have not been completed. Real OpenRouter e
 remains outstanding because no API key or real-question set is available. The FastAPI `/query`
 route selects an explicit dataset, loads the answerability artifact, and uses OpenRouter generation;
 endpoint tests mock retrieval and generation and do not count as live evaluation.
+The locked Docker image builds successfully and starts the API; a live `/query` request without
+an index returns the expected HTTP 503. Model inference and OpenRouter generation remain unverified.
 
 ## Overview
 This phase implements the evidence layer, answerability model, generation with citation verification, and a FastAPI service for the evidence-aware biomedical RAG system.
