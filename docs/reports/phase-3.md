@@ -1,5 +1,15 @@
 # Phase 3: Evidence Layer, Answerability, Generation and Service
 
+## Status update — 2026-10-22
+
+The report below records the original scaffold and is not acceptance evidence. Stance inference now
+uses the revision-pinned [VeriSci claim verifier](https://huggingface.co/rishhh/verisci-claim-verifier-sentence-nli/tree/479bd57f1e3ed6a3f8775c3b8d1b5ca58562a111),
+which predicts `SUPPORTS`, `REFUTES`, and `NOT_ENOUGH_INFO`; the adapter maps these to the project's
+support / contradict / neutral order. The model is licensed CC BY-NC 2.0, and its raw softmax scores
+are not calibrated. This environment could not run the model under the repository's required
+memory-capped runner, so no SciFact evaluation metrics are claimed. Answerability training and
+calibration, the claim-evidence ledger, and real OpenRouter evaluation remain incomplete.
+
 ## Overview
 This phase implements the evidence layer, answerability model, generation with citation verification, and a FastAPI service for the evidence-aware biomedical RAG system.
 

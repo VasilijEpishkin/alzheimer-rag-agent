@@ -2,18 +2,16 @@
 
 from __future__ import annotations
 
-import gc
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Literal, Sequence
+from typing import Any
 
 import numpy as np
 
 from evidence_rag.models import Document
-from evidence_rag.reranking import Candidate, FEATURE_NAMES, build_features
+from evidence_rag.reranking import Candidate, build_features
 
-# Placeholder for biomedical NLI model; in production, load a real model.
-# For unit tests, we can mock this.
+_STANCE_MODEL_ID = "rishhh/verisci-claim-verifier-sentence-nli"
+_STANCE_MODEL_REVISION = "479bd57f1e3ed6a3f8775c3b8d1b5ca58562a111"
 _STANCE_MODEL = None
 
 
@@ -24,13 +22,30 @@ def _load_stance_model() -> Any:
     """
     global _STANCE_MODEL
     if _STANCE_MODEL is None:
-        # In a real implementation, we would load a model here.
-        # For now, we return a uniform distribution as placeholder.
-        # This is intentional to avoid fabricating data.
-        def _placeholder(query: str, document_text: str) -> list[float]:
-            return [1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0]
+        from transformers import pipeline
 
-        _STANCE_MODEL = _placeholder
+        classifier = pipeline(
+            "text-classification",
+            model=_STANCE_MODEL_ID,
+            revision=_STANCE_MODEL_REVISION,
+            device=-1,
+        )
+
+        def classify(query: str, document_text: str) -> list[float]:
+            output = classifier(
+                {"text": query, "text_pair": document_text},
+                top_k=None,
+                truncation=True,
+                max_length=512,
+            )
+            probabilities = {row["label"]: float(row["score"]) for row in output}
+            return [
+                probabilities["SUPPORTS"],
+                probabilities["REFUTES"],
+                probabilities["NOT_ENOUGH_INFO"],
+            ]
+
+        _STANCE_MODEL = classify
     return _STANCE_MODEL
 
 

@@ -5,7 +5,6 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from evidence_rag.models import Document
 from evidence_rag.evidence_layer import (
     StanceOutput,
     _stance,
@@ -14,6 +13,7 @@ from evidence_rag.evidence_layer import (
     is_retracted,
     study_design_weight,
 )
+from evidence_rag.models import Document
 from evidence_rag.reranking import Candidate
 
 
@@ -90,23 +90,28 @@ def test_is_retracted():
     assert is_retracted(doc_not) is False
 
     # Empty publication types
-    doc_empty = Document(doc_id="4", title="Empty", text="", publication_types=(), is_retracted=False)
+    doc_empty = Document(
+        doc_id="4", title="Empty", text="", publication_types=(), is_retracted=False
+    )
     assert is_retracted(doc_empty) is False
 
 
-def test__stance_placeholder():
-    """Test that _stance returns uniform probabilities (placeholder model)."""
-    # The placeholder model returns [1/3, 1/3, 1/3] for any input.
+def test_stance_returns_model_probabilities(monkeypatch):
     query = "What is the effect of drug X on disease Y?"
     document = Document(doc_id="1", title="Some paper", text="This is the abstract.")
+    monkeypatch.setattr(
+        "evidence_rag.evidence_layer._load_stance_model",
+        lambda: lambda _query, _text: [0.2, 0.3, 0.5],
+    )
+
     stance = _stance(query, document)
     assert isinstance(stance, StanceOutput)
-    assert stance.supports == pytest.approx(1.0 / 3.0)
-    assert stance.contradicts == pytest.approx(1.0 / 3.0)
-    assert stance.neutral == pytest.approx(1.0 / 3.0)
+    assert stance.supports == pytest.approx(0.2)
+    assert stance.contradicts == pytest.approx(0.3)
+    assert stance.neutral == pytest.approx(0.5)
 
 
-def test_evidence_features():
+def test_evidence_features(monkeypatch):
     """Test evidence_features builds the expected feature vector."""
     # We'll create a minimal candidate and document.
     query = "test query"
@@ -127,6 +132,10 @@ def test_evidence_features():
         bm25_rank=2,
         dense_rank=3,
         cross_score=0.1,
+    )
+    monkeypatch.setattr(
+        "evidence_rag.evidence_layer._load_stance_model",
+        lambda: lambda _query, _text: [1.0 / 3.0] * 3,
     )
 
     features = evidence_features(query, document, candidate)
@@ -151,7 +160,7 @@ def test_evidence_features():
     assert features[15] == 4.0
 
 
-def test_answerability_features():
+def test_answerability_features(monkeypatch):
     """Test answerability_features currently just calls evidence_features (placeholder)."""
     query = "test query"
     document = Document(
@@ -171,6 +180,10 @@ def test_answerability_features():
         bm25_rank=2,
         dense_rank=3,
         cross_score=0.1,
+    )
+    monkeypatch.setattr(
+        "evidence_rag.evidence_layer._load_stance_model",
+        lambda: lambda _query, _text: [1.0 / 3.0] * 3,
     )
 
     feats1 = evidence_features(query, document, candidate)
